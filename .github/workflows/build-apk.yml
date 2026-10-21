@@ -1,10 +1,10 @@
-
 name: Build Lernplaner APK
 on:
   push:
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+  issues: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,20 +15,42 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
-      - name: Install Android SDK
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+      - name: Install Android SDK packages
+        run: yes | sdkmanager "platforms;android-35" "build-tools;35.0.0" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
       - name: Extract project ZIP
-        run: unzip -o lernplaner-android.zip -d .
+        run: |
+          unzip -o lernplaner-android.zip -d .
+          find lernplaner-android -maxdepth 3 | head -50
       - name: Build debug APK
         working-directory: lernplaner-android
-        run: gradle assembleDebug
-      - uses: actions/upload-artifact@v4
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace --no-daemon 2>&1 | tee build.log
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
         with:
           name: lernplaner-debug-apk
           path: lernplaner-android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+      - name: Publish APK as GitHub Release
+        if: success()
+        working-directory: lernplaner-android
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "debug-${GITHUB_RUN_NUMBER}" \
+            app/build/outputs/apk/debug/app-debug.apk \
+            --title "Lernplaner Debug APK (Build ${GITHUB_RUN_NUMBER})" \
+            --notes "Automatisch gebaute Debug-APK. Herunterladen, auf dem Handy öffnen und Installation aus unbekannten Quellen erlauben." \
+            --prerelease
+      - name: Report build failure as issue
+        if: failure()
+        working-directory: lernplaner-android
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tail -n 250 build.log > ../fail.log 2>/dev/null || echo "Kein build.log gefunden" > ../fail.log
+          gh issue create --title "APK-Build fehlgeschlagen (Run ${GITHUB_RUN_NUMBER})" --body-file ../fail.log
